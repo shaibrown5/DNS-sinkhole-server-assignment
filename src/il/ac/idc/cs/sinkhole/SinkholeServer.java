@@ -2,6 +2,7 @@ package il.ac.idc.cs.sinkhole;
 
 import java.io.ByteArrayInputStream;
 import java.io.DataInputStream;
+import java.io.EOFException;
 import java.net.*;
 import java.util.Arrays;
 import java.net.DatagramPacket;
@@ -32,6 +33,7 @@ public class SinkholeServer {
         DatagramSocket serverSocket = new DatagramSocket(5300);
         byte[] sendData;
 
+
         while(true)
         {
             // get random root server and get its IP
@@ -44,37 +46,125 @@ public class SinkholeServer {
             DatagramPacket receivePacket = new DatagramPacket(receiveData, receiveData.length);
             // halts until query received
             serverSocket.receive(receivePacket);
-
-            //----------------------------------------------------------------------------------------------------------------------
-            for (int i = 0; i < receivePacket.getLength(); i++) {
-                System.out.print(" 0x" + String.format("%x", receiveData[i]) + " " );
-            }
-            System.out.println("\n");
-
-
-            DataInputStream din = new DataInputStream(new ByteArrayInputStream(receiveData));
-            int transactionNum = Integer.parseInt(String.valueOf(din.readShort()),16); // first 2 bytes
-            // need to check flags for Rcode (errors) which are the last 4 bytes = | QR1 | Opcode4 | AA1 | TC1 | RD1 | RA1| Z3 | RCODE4 |
-            // so need to rethink this. this gives me the int value need to check this and use string.format
-            int flags = Integer.parseInt(String.valueOf(din.readShort()),16); //second 2 bytes
-            int numQuestion = Integer.parseInt(String.valueOf(din.readShort()),16); // third 2 bytes, # question
-            int numAnswers = Integer.parseInt(String.valueOf(din.readShort()),16); // fourth 2 bytes # of answers
-            int numAuthority = Integer.parseInt(String.valueOf(din.readShort()),16); // fifth 2 bytes # of authority
-            int numAdditional = Integer.parseInt(String.valueOf(din.readShort()),16);// sixth 2 bytes # of additional
-            // System.out.println("Additional RRs: 0x" + String.format("%x", din.readShort()));---------------------------------------------
-
+            System.out.println("recevied first packet");
 
             InetAddress add = receivePacket.getAddress();
             int curPort = receivePacket.getPort();
             sendPacket.setData(receivePacket.getData());
-
             // send the packet
             serverSocket.send(sendPacket);
+            System.out.println("sent first response");
 
             for (int i = 0; i < 16 ; i++) {
                 DatagramPacket responsePacket = new DatagramPacket(receiveData, receiveData.length);
                 // halts until query received from authority
                 serverSocket.receive(responsePacket);
+                System.out.println("recevied packet " + i);
+                int index = responsePacket.getOffset();
+                System.out.println(index);
+
+                //----------------------------------------------------------------------------------------------------------------------
+                //this gives me the rep of each byte in hexa form
+                //for debugging
+                for (int j = 0; j < receivePacket.getLength(); j++) {
+                    System.out.print((char)(receiveData[j]));
+                }
+                System.out.println("\n");
+                for (int j = 0; j < receivePacket.getLength(); j++) {
+                    System.out.print(" 0x" + String.format("%x", receiveData[j]) + " " );
+                }
+                System.out.println("\n");
+
+                DataInputStream din = new DataInputStream(new ByteArrayInputStream(receiveData));
+                int transactionNum = din.readShort(); // first 2 bytes as int
+                int flagBytes = din.readShort(); //second 2 bytes (num the flags represent as int)
+                boolean hasNoError = hasNoError(String.format("%x", flagBytes)); // boolean checking if there is no error
+                System.out.println("is it error free? " + hasNoError);
+                int numQuestion = din.readShort(); // third 2 bytes, # question
+                int numAnswers = din.readShort(); // fourth 2 bytes # of answers
+                int numAuthority = din.readShort(); // fifth 2 bytes # of authority
+                int numAdditional = din.readShort();// sixth 2 bytes # of additional
+
+                // skip the question part (ends in 0x0101)
+                boolean inQuestion = true;
+                StringBuilder endSectionChecker = new StringBuilder();
+                while(inQuestion){
+                    byte b = din.readByte();
+                    int num = (b == 0 || b == 1) ? b : 9;
+                    endSectionChecker.append(num);
+
+                    if (endSectionChecker.toString().endsWith("0101")){
+                        inQuestion = false;
+                        endSectionChecker = new StringBuilder();
+                    }
+                }
+                System.out.println("finished question section");
+
+
+
+                byte b;
+                StringBuilder s = new StringBuilder();
+                boolean b1 = true;
+                while (b1) {
+                    try {
+                        b = din.readByte();
+                        int test = Byte.toUnsignedInt(b);
+                        char c = test < 32 ? '.' : (char)(test);
+                        System.out.print(c);
+                        s.append(c);
+                    } catch (EOFException e) {
+                        b1 = false;
+                    }
+                }
+                System.out.println(s.toString());
+
+
+
+
+                if(hasNoError){
+                    if(numAnswers == 0 && numAuthority >0){
+                        // TODO ---------------------------
+                        // get the next wanted address
+                        byte c = din.readByte();
+                        while (c < 32){
+                            c = din.readByte();
+                        }
+
+                        String nextAddress ="";
+
+                        while (c != -64){ //192 in unsigned
+                            int test = Byte.toUnsignedInt(c);
+                            char let = test < 32 ? '.' : (char)(test);
+                            c = din.readByte();
+                            nextAddress += let;
+                        }
+                        //remove the last character
+                        nextAddress = nextAddress.substring(0,nextAddress.length()-1);
+                        System.out.println("exiting authority with adress " + nextAddress);
+                    }
+                }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
             }
@@ -92,23 +182,18 @@ public class SinkholeServer {
         return letter + ".root-servers.net";
     }
 
-    //sketch for getting and reading the authority stuff by tal
-//    public static int respectMyAuthoritah(int DNSMessage) {
-//        int temp = DNSMessage << (4 + 4); // id + flags
-//        int qSize = temp >> (32 - 4 - 4 - 4); // to get Question value
-//        int qLen;// get the length of Question with str.length() + WRAPPER
-//        temp = temp << 4; // id + flags+ quest
-//        int ansRRSize = temp >> (32 - (4 * 4)); // to get answ value
-//        int ansRRlen; // get the length of Question with str.length() + WRAPPER
-//        temp = temp << 4; // id + flags+ quest + ansRR
-//        int autRRSize = temp >> (32 - (4 * 5)); // to get Auth value
-//        int autRRlen; // get the length of Question with str.length() + WRAPPER
-//        temp = temp << 4; // id + flags+ quest + ansRR + auth
-//        int addRRSize = temp >> (32 - (4 * 6)); // to get Additional value
-//        int addRRlen; // get the length of Question with str.length() + WRAPPER
-//        temp = DNSMessage << (4 * 6 + qLen + ansRRlen);
-//        return temp >> (4 * 6 + qLen + ansRRlen + addRRlen);
-//    }
+    /**
+     * This method checks if the RCODE returns a no error response (last byte is 0)
+     * @param hexNum: the hexadecimal representation of the flags header
+     * @return true if there is a no error response, false otherwise.
+     */
+    private static boolean hasNoError(String hexNum){
+        boolean ans = false;
 
+        if(hexNum.endsWith("0")){
+            ans = true;
+        }
 
+        return ans;
+    }
 }
