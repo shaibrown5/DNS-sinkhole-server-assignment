@@ -1,15 +1,11 @@
 package il.ac.idc.cs.sinkhole;
 
-import java.io.ByteArrayInputStream;
-import java.io.DataInputStream;
-import java.io.EOFException;
-import java.io.IOException;
+
 import java.net.*;
-import java.util.ArrayList;
+import java.sql.SQLOutput;
 import java.util.Arrays;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
-import java.util.Objects;
 
 /*
 - Address Mapping record (A Record)—also known as a DNS host record, stores a hostname and its corresponding IPv4 address
@@ -34,6 +30,7 @@ public class SinkholeServer {
     // Offset pointers
     private static final int m_FLAGS_FLAGS_OFFSET = 16;
     private static final int m_RD_BYTE_OFFSET = 2;
+    private static final int m_AA_BYTE_OFFSET = 2;
     private static final int m_RA_BYTE_OFFSET = 3;
     private static final int m_ERROR_BYTE_OFFSET = 3;
     private static final int m_NUM_ANSWERS_BYTE_OFFSET = 6;
@@ -53,6 +50,7 @@ public class SinkholeServer {
             System.out.println(rootServer);
 
             // Set the IP address to the root server
+            // TODO CHECK B
             InetAddress ipAddress = InetAddress.getByName(rootServer);
 
             // Creates a datagram packet to receive data
@@ -113,12 +111,12 @@ public class SinkholeServer {
                         // Init a byte to use when we read the data
                         byte b;
                         // Skipping over the question name part (ends in 0x0)
-                        passSection(receivedData);
+                        labelHandler(receivedData, m_BYTE_POINTER, false);
                         // Skipping the Question Type (2 bytes) and Question Class (2 bytes) total of 4 bytes
                         m_BYTE_POINTER += 4;
                         System.out.println("finished question section");
 
-                        /* Dealing with the name part of authority */
+                        /* Dealing with Authority */
 
                         // Reading the next unread byte which will tell us whether we handle a pointer or header
                         b = receivedData[m_BYTE_POINTER++];
@@ -128,27 +126,21 @@ public class SinkholeServer {
                         } else {
                             // Go to previous byte
                             m_BYTE_POINTER--;
-                            // Getting name part of authority
-                            String authName = labelHandler(receivedData, m_BYTE_POINTER, false);
-
+                            // skip over the auth name part
+                            labelHandler(receivedData, m_BYTE_POINTER, false);
                         }
+
                         // Reading and Skipping over, type (2 bytes), class(2 bytes), ttl(4 bytes), rdlenth(2 bytes) total of 10 bytes
                         m_BYTE_POINTER += 10;
 
-                        // Getting the first name server
-                        // TODO CHECK B
-                        String nameServerName = labelHandler(receivedData, m_BYTE_POINTER, false);
+                        // Getting the first name server from authority
+                        String respectMyAuthorityah = labelHandler(receivedData, m_BYTE_POINTER, false);
 
-                        // Remove the last char we got since it is '.'
-//                        nameServerName = nameServerName.substring(0, nameServerName.length() - 1);
-
-                        // TODO  Debugging purposes
-                        System.out.println("First Name Server is: " + nameServerName);
+                        System.out.println("First Name Server is: " + respectMyAuthorityah);
 
                         // Set the new IP by getting it's name
-                        InetAddress nameServerAddress = InetAddress.getByName(nameServerName);
+                        InetAddress nameServerAddress = InetAddress.getByName(respectMyAuthorityah);
 
-                        // TODO  Debugging purposes
                         System.out.println(nameServerAddress);
 
                         // setting the next queryPacket
@@ -157,14 +149,26 @@ public class SinkholeServer {
                         System.out.println("sent response " + i + "\n");
 
                     } else if (numAnswers > 0) {
-                        System.out.println("got an answer\n\n");
-                        break;
+                        System.out.println("Answer recieved");
                         // get the answer from answer
                         // change flags RA and AA
                         // You need to set the RA bit and unset the AA bit before forwarding the response
                         // light up RD
                         // then send to the client
 
+                        // TODO CHECK IF WE NEED TO CHANGE FLAG RD
+                        //light up RD
+                        //sendOriginalData[m_RD_BYTE_OFFSET] = (byte)(sendOriginalData[m_RD_BYTE_OFFSET] | (byte)0x1);
+
+                        // light up flag RA
+                        sendOriginalData[m_RA_BYTE_OFFSET] = (byte) (sendOriginalData[m_RA_BYTE_OFFSET] | (byte) 0x80);
+                        // light up flag AA
+                        sendOriginalData[m_AA_BYTE_OFFSET] = (byte) (sendOriginalData[m_AA_BYTE_OFFSET] & (byte) 0xFB);
+                        System.out.println("lit up RA and unset AA");
+
+                        DatagramPacket queryPacket = new DatagramPacket(sendOriginalData, sendOriginalData.length, clientIpAddress, clientPort);
+                        serverSocket.send(queryPacket);
+                        break;
 
                     } else {
                         break;
@@ -181,31 +185,19 @@ public class SinkholeServer {
 
     /**
      * this mthods gets 2 bytes and get the short num they represent
-     * @param firstByte - first byte
+     *
+     * @param firstByte   - first byte
      * @param secondByte- second byte
      * @return int variable representing the 2 bytes
      */
     private static int shortToInt(byte firstByte, byte secondByte) {
-        int ans = 0;
+        int ans;
 
         ans = (Byte.toUnsignedInt(firstByte) & 0x000000ff) << 8;
-        ans += (Byte.toUnsignedInt(secondByte) & 0x000000ff) ;
+        ans += (Byte.toUnsignedInt(secondByte) & 0x000000ff);
 
         return ans;
     }
-//
-//    private static byte[] updateDataForSending(byte[] originalData) {
-
-//        byte[] updatedData = originalData;
-//
-//        //set all flags to 0
-//        for (int j = m_FLAGS_FLAGS_OFFSET; j < (m_FLAGS_FLAGS_OFFSET + 16); j++) {
-//            updatedData[j] = 0;
-//        }
-//
-//
-//        return updatedData;
-//    }
 
     /**
      * This method return true if the byte given is the begining of a pointer
@@ -247,7 +239,7 @@ public class SinkholeServer {
      */
     private static String labelHandler(byte[] i_recievedData, int i_arrPointer, boolean i_callFromPointer) {
         StringBuilder addressBuilder = new StringBuilder();
-        byte b = 0;
+        byte b;
         byte numToRead;
         boolean isPointer = false;
         int pointer = (i_callFromPointer) ? i_arrPointer : m_BYTE_POINTER;
@@ -297,24 +289,6 @@ public class SinkholeServer {
      */
     private static String pointerHandler(int offset, byte[] recievedData) {
         return labelHandler(recievedData, offset, true);
-    }
-
-
-    /**
-     * This method passes through a section in the DNS packet by reading bytes until it reaches a zero byte
-     *
-     * @param receivedData: the data received stream attached to the data
-     * @return the last byte read
-     */
-    public static void passSection(byte[] receivedData) {
-        try {
-            while (receivedData[++m_BYTE_POINTER] != 0) {
-            }
-            m_BYTE_POINTER++;
-        } catch (IndexOutOfBoundsException iob) {
-            System.out.println("No Zeros left");
-        }
-
     }
 
     /**
