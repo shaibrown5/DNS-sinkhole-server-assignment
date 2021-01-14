@@ -148,29 +148,27 @@ public class SinkholeServer {
                         serverSocket.send(queryPacket);
                         System.out.println("sent response " + i + "\n");
 
-                    } else if (numAnswers > 0) {
-                        System.out.println("Answer recieved");
-                        // get the answer from answer
-                        // change flags RA and AA
-                        // You need to set the RA bit and unset the AA bit before forwarding the response
-                        // light up RD
-                        // then send to the client
+                    } else{
+                        if (numAnswers > 0) {
+                            System.out.println("Answer received");
+                            // TODO CHECK IF WE NEED TO CHANGE FLAG RD
+                            //light up RD
+                            //sendOriginalData[m_RD_BYTE_OFFSET] = (byte)(sendOriginalData[m_RD_BYTE_OFFSET] | (byte)0x1);
 
-                        // TODO CHECK IF WE NEED TO CHANGE FLAG RD
-                        //light up RD
-                        //sendOriginalData[m_RD_BYTE_OFFSET] = (byte)(sendOriginalData[m_RD_BYTE_OFFSET] | (byte)0x1);
+                            // light up flag RA
+                            sendOriginalData[m_RA_BYTE_OFFSET] = (byte) (sendOriginalData[m_RA_BYTE_OFFSET] | (byte) 0x80);
+                            // light up flag AA
+                            sendOriginalData[m_AA_BYTE_OFFSET] = (byte) (sendOriginalData[m_AA_BYTE_OFFSET] & (byte) 0xFB);
+                            System.out.println("lit up RA and unset AA");
 
-                        // light up flag RA
-                        sendOriginalData[m_RA_BYTE_OFFSET] = (byte) (sendOriginalData[m_RA_BYTE_OFFSET] | (byte) 0x80);
-                        // light up flag AA
-                        sendOriginalData[m_AA_BYTE_OFFSET] = (byte) (sendOriginalData[m_AA_BYTE_OFFSET] & (byte) 0xFB);
-                        System.out.println("lit up RA and unset AA");
+                            DatagramPacket queryPacket = new DatagramPacket(sendOriginalData, sendOriginalData.length, clientIpAddress, clientPort);
+                            serverSocket.send(queryPacket);
+                            System.out.println("sending answer");
 
-                        DatagramPacket queryPacket = new DatagramPacket(sendOriginalData, sendOriginalData.length, clientIpAddress, clientPort);
-                        serverSocket.send(queryPacket);
-                        break;
+                        }else {
+                            System.out.println("shit");
+                        }
 
-                    } else {
                         break;
                     }
                 } else {
@@ -178,7 +176,7 @@ public class SinkholeServer {
                     System.out.println(1);
                 }
             }
-            break;
+
         }
     }
 
