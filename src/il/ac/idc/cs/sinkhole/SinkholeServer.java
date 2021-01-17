@@ -1,43 +1,36 @@
 package il.ac.idc.cs.sinkhole;
 
-
+import java.io.*;
 import java.net.*;
-import java.sql.SQLOutput;
 import java.util.Arrays;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
-
-/*
-- Address Mapping record (A Record)—also known as a DNS host record, stores a hostname and its corresponding IPv4 address
-    -   Name is host name
-    -   Value is IP address
--this is the flow:
-    while true
-    send packet to root server
-    recieve packet
-    if all the flags are ok (see 3 in pdf) then continue (
-        - וב זה יכול לקרות חח, אבל בגדול, התשובות מגיעות לפני ה-authority אז תכלס, אם מצאתם תשובה ויש עוד authority, רק תחזירו תשובה פשוט
-
-    then run in a for loop i<16 unitl get answer
- */
+import java.util.HashSet;
 
 
 public class SinkholeServer {
 
-    // Points to the next unread byte
+    // pointer for the data array that points to the next unread byte
     private static int m_BYTE_POINTER;
-
-    // Offset pointers
-    private static final int m_FLAGS_FLAGS_OFFSET = 16;
+    // Offset pointers that point to the byte offset of the flag/ header they represent
+    private static final int m_QR_BYTE_OFFSET = 2;
     private static final int m_RD_BYTE_OFFSET = 2;
     private static final int m_AA_BYTE_OFFSET = 2;
     private static final int m_RA_BYTE_OFFSET = 3;
     private static final int m_ERROR_BYTE_OFFSET = 3;
     private static final int m_NUM_ANSWERS_BYTE_OFFSET = 6;
     private static final int m_NUM_AUTHORITY_BYTE_OFFSET = 8;
+    // udp port num
     private static final int m_UDP_PORT = 53;
+    // flag to see if it replied in 16 iterations
+    private static boolean m_GOT_ANSWER = false;
+    //hashmap to check the names in blocklist
+    private static final HashSet<String> m_BLOCKLIST = new HashSet<>();
 
     public static void main(String[] args) throws Exception {
+        if (args.length > 0) {
+            blockListSet(args[0]);
+        }
         //Buffers to hold the incoming datagram and the outgoing datagram
         byte[] receivedData = new byte[1024];
 
@@ -50,14 +43,18 @@ public class SinkholeServer {
             System.out.println(rootServer);
 
             // Set the IP address to the root server
-            // TODO CHECK B
             InetAddress ipAddress = InetAddress.getByName(rootServer);
 
             // Creates a datagram packet to receive data
             DatagramPacket receiveFromClientPacket = new DatagramPacket(receivedData, receivedData.length);
 
-            // halts until query received
-            serverSocket.receive(receiveFromClientPacket);
+            // attempt to recieve the incoming datapacket
+            try{
+                serverSocket.receive(receiveFromClientPacket);
+            }catch(IOException io){
+                System.err.println(io.getMessage());
+                continue;
+            }
             System.out.println("received first packet");
 
             // Flag handling //
@@ -74,11 +71,19 @@ public class SinkholeServer {
             InetAddress clientIpAddress = receiveFromClientPacket.getAddress();
             int clientPort = receiveFromClientPacket.getPort();
 
-            // send
-            serverSocket.send(sendToRootServerPacket);
+            // Sent the data to the root server
+            try{
+                serverSocket.send(sendToRootServerPacket);
+            }catch (IllegalArgumentException | IOException e){
+                System.err.println(e.getMessage());
+                sendServerFailure(sendOriginalData, clientIpAddress, clientPort, serverSocket);
+                continue;
+            }
+
             System.out.println("sent first response\n");
 
             for (int i = 0; i < 16; i++) {
+                m_GOT_ANSWER = false;
                 receivedData = new byte[1024];
 
                 // Gets the next response
@@ -87,7 +92,7 @@ public class SinkholeServer {
                 // Halts until the query has been received from authority
                 serverSocket.receive(responsePacket);
 
-                //resize the data
+                // Resize the data received accordingly to its size
                 receivedData = Arrays.copyOfRange(receivedData, 0, responsePacket.getLength());
 
                 // Readjust the pointer to the beginning
@@ -103,7 +108,7 @@ public class SinkholeServer {
                 System.out.println("number of authority: " + numAuth);
                 System.out.println("is it error free? " + haveNoErr);
 
-                // advance the pointer to skip the flags
+                // Advances the pointer in order to skip the flags
                 m_BYTE_POINTER += 12;
 
                 if (haveNoErr) {
@@ -111,22 +116,31 @@ public class SinkholeServer {
                         // Init a byte to use when we read the data
                         byte b;
                         // Skipping over the question name part (ends in 0x0)
-                        labelHandler(receivedData, m_BYTE_POINTER, false);
+                        String questionName = labelHandler(receivedData, m_BYTE_POINTER, false);
+                        System.out.println(questionName);
+
+                        // if the question name is in the blocklist send name error and break
+                        if (args.length > 0 && isInBlockList(questionName.substring(0, questionName.length() - 1))) {
+                            m_GOT_ANSWER = true;
+                            sendNameError(sendOriginalData, clientIpAddress, clientPort, serverSocket);
+                            System.out.println("sending Error Answer");
+                            break;
+                        }
+
                         // Skipping the Question Type (2 bytes) and Question Class (2 bytes) total of 4 bytes
                         m_BYTE_POINTER += 4;
                         System.out.println("finished question section");
 
-                        /* Dealing with Authority */
-
-                        // Reading the next unread byte which will tell us whether we handle a pointer or header
+                        /*### Dealing with Authority ###*/
+                        // Reading the next unread byte which will tell us whether we need to handle a pointer or label
+                        // this reads the auth name part which is not used by us
                         b = receivedData[m_BYTE_POINTER++];
                         if (checkIfPointer(b)) {
-                            // Reads the second byte in the octet = 1 byte
+                            // Reads the second byte in the pointer octet = 1 byte
                             m_BYTE_POINTER++;
                         } else {
                             // Go to previous byte
                             m_BYTE_POINTER--;
-                            // skip over the auth name part
                             labelHandler(receivedData, m_BYTE_POINTER, false);
                         }
 
@@ -138,51 +152,157 @@ public class SinkholeServer {
 
                         System.out.println("First Name Server is: " + respectMyAuthorityah);
 
-                        // Set the new IP by getting it's name
+                        // Set the new IP address
                         InetAddress nameServerAddress = InetAddress.getByName(respectMyAuthorityah);
 
                         System.out.println(nameServerAddress);
 
-                        // setting the next queryPacket
+                        // create the next queryPacket
                         DatagramPacket queryPacket = new DatagramPacket(sendOriginalData, sendOriginalData.length, nameServerAddress, m_UDP_PORT);
-                        serverSocket.send(queryPacket);
+
+                        try{
+                            serverSocket.send(queryPacket);
+                        }catch (IllegalArgumentException | IOException e){
+                            m_GOT_ANSWER = true;
+                            System.err.println(e.getMessage());
+                            sendServerFailure(sendOriginalData, clientIpAddress, clientPort, serverSocket);
+                            break;
+                        }
+
                         System.out.println("sent response " + i + "\n");
 
-                    } else{
-                        if (numAnswers > 0) {
-                            System.out.println("Answer received");
-                            // TODO CHECK IF WE NEED TO CHANGE FLAG RD
-                            //light up RD
-                            //sendOriginalData[m_RD_BYTE_OFFSET] = (byte)(sendOriginalData[m_RD_BYTE_OFFSET] | (byte)0x1);
+                    } else {
+                        m_GOT_ANSWER = true;
+                        // unset up flag AA
+                        sendOriginalData[m_AA_BYTE_OFFSET] = (byte) (sendOriginalData[m_AA_BYTE_OFFSET] & (byte) 0xFB);
+                        // light up RD
+                        sendOriginalData[m_RD_BYTE_OFFSET] = (byte) (sendOriginalData[m_RD_BYTE_OFFSET] | (byte) 0x1);
+                        // light up flag QR
+                        sendOriginalData[m_QR_BYTE_OFFSET] = (byte) (sendOriginalData[m_QR_BYTE_OFFSET] | (byte) 0x80);
+                        // light up flag RA
+                        sendOriginalData[m_RA_BYTE_OFFSET] = (byte) (sendOriginalData[m_RA_BYTE_OFFSET] | (byte) 0x80);
+                        System.out.println("lit up RA and unset AA");
 
-                            // light up flag RA
-                            sendOriginalData[m_RA_BYTE_OFFSET] = (byte) (sendOriginalData[m_RA_BYTE_OFFSET] | (byte) 0x80);
-                            // light up flag AA
-                            sendOriginalData[m_AA_BYTE_OFFSET] = (byte) (sendOriginalData[m_AA_BYTE_OFFSET] & (byte) 0xFB);
-                            System.out.println("lit up RA and unset AA");
+                        System.out.println("Answer received");
+                        String msg = "Sending answer";
+                        DatagramPacket answerQueryPacket = new DatagramPacket(sendOriginalData, sendOriginalData.length, clientIpAddress, clientPort);
 
-                            DatagramPacket queryPacket = new DatagramPacket(sendOriginalData, sendOriginalData.length, clientIpAddress, clientPort);
-                            serverSocket.send(queryPacket);
-                            System.out.println("sending answer");
+                        // if it was cause by error
+                        if (numAuth == 0 && numAnswers == 0){
+                            // light data ERROR NXERROR
+                            sendOriginalData[m_ERROR_BYTE_OFFSET] = (byte) (sendOriginalData[m_ERROR_BYTE_OFFSET] | (byte) 0x3);
+                            answerQueryPacket = new DatagramPacket(sendOriginalData, sendOriginalData.length, clientIpAddress, clientPort);
+                            msg = "sending auth = 0 , ans = 0";
+                        }
 
-                        }else {
-                            System.out.println("shit");
+                        System.out.println(msg);
+
+                        try{
+                            serverSocket.send(answerQueryPacket);
+                        }catch (IllegalArgumentException | IOException e){
+                            System.err.println(e.getMessage());
+                            sendServerFailure(sendOriginalData, clientIpAddress, clientPort, serverSocket);
+                            break;
                         }
 
                         break;
                     }
-                } else {
-                    // TODO Debugging Purposes
-                    System.out.println(1);
+                }
+                else {
+                    m_GOT_ANSWER = true;
+
+                    // unset flag AA
+                    sendOriginalData[m_AA_BYTE_OFFSET] = (byte) (sendOriginalData[m_AA_BYTE_OFFSET] & (byte) 0xFB);
+                    //light up RD
+                    sendOriginalData[m_RD_BYTE_OFFSET] = (byte) (sendOriginalData[m_RD_BYTE_OFFSET] | (byte) 0x1);
+                    // light up flag QR
+                    sendOriginalData[m_QR_BYTE_OFFSET] = (byte) (sendOriginalData[m_QR_BYTE_OFFSET] | (byte) 0x80);
+                    // light data ERROR nxdomain
+                    sendOriginalData[m_ERROR_BYTE_OFFSET] = (byte) (sendOriginalData[m_ERROR_BYTE_OFFSET] | (byte) 0x3);
+                    // light up flag RA
+                    sendOriginalData[m_RA_BYTE_OFFSET] = (byte) (sendOriginalData[m_RA_BYTE_OFFSET] | (byte) 0x80);
+                    DatagramPacket queryPacket = new DatagramPacket(sendOriginalData, sendOriginalData.length, clientIpAddress, clientPort);
+                    System.out.println("sending Error Answer");
+
+                    try{
+                        serverSocket.send(queryPacket);
+                    }catch (IllegalArgumentException | IOException e){
+                        System.err.println(e.getMessage());
+                        sendServerFailure(sendOriginalData, clientIpAddress, clientPort, serverSocket);
+                        break;
+                    }
+
+                    break;
                 }
             }
 
+            // if 16 itterations passed then send a nxdomain error
+            if(!m_GOT_ANSWER){
+                System.out.println("didnt get answer in for loop");
+                sendNameError(sendOriginalData, clientIpAddress, clientPort, serverSocket);
+                System.out.println("sending Error Answer");
+            }
+            System.out.println();
+        }
+    }
+
+    /**
+     * sends server failure message back to client if a non dns error occured
+     * @param sendData - the data to send
+     * @param address - the address to send
+     * @param portNum - the portnum to send to
+     */
+    private static void sendServerFailure(byte[] sendData, InetAddress address, int portNum, DatagramSocket serverSocket){
+        System.out.println("didnt get answer in for loop");
+        // unset flag AA
+        sendData[m_AA_BYTE_OFFSET] = (byte) (sendData[m_AA_BYTE_OFFSET] & (byte) 0xFB);
+        //light up RD
+        sendData[m_RD_BYTE_OFFSET] = (byte) (sendData[m_RD_BYTE_OFFSET] | (byte) 0x1);
+        // light up flag QR
+        sendData[m_QR_BYTE_OFFSET] = (byte) (sendData[m_QR_BYTE_OFFSET] | (byte) 0x80);
+        // light data ERROR server failure
+        sendData[m_ERROR_BYTE_OFFSET] = (byte) (sendData[m_ERROR_BYTE_OFFSET] | (byte) 0x2);
+        // light up flag RA
+        sendData[m_RA_BYTE_OFFSET] = (byte) (sendData[m_RA_BYTE_OFFSET] | (byte) 0x80);
+        DatagramPacket queryPacket = new DatagramPacket(sendData, sendData.length, address, portNum);
+
+        try {
+            serverSocket.send(queryPacket);
+        }catch (Exception e){
+            System.err.println(" Un able to send exception to client \n " + e.getMessage());
+        }
+    }
+
+    /**
+     * sends name error message back to client
+     * @param sendData - the data to send
+     * @param address - the address to send
+     * @param portNum - the portnum to send to
+     */
+    private static void sendNameError(byte[] sendData, InetAddress address, int portNum, DatagramSocket serverSocket){
+        System.out.println("didnt get answer in for loop");
+        // unset flag AA
+        sendData[m_AA_BYTE_OFFSET] = (byte) (sendData[m_AA_BYTE_OFFSET] & (byte) 0xFB);
+        //light up RD
+        sendData[m_RD_BYTE_OFFSET] = (byte) (sendData[m_RD_BYTE_OFFSET] | (byte) 0x1);
+        // light up flag QR
+        sendData[m_QR_BYTE_OFFSET] = (byte) (sendData[m_QR_BYTE_OFFSET] | (byte) 0x80);
+        // light data ERROR name error
+        sendData[m_ERROR_BYTE_OFFSET] = (byte) (sendData[m_ERROR_BYTE_OFFSET] | (byte) 0x3);
+        // light up flag RA
+        sendData[m_RA_BYTE_OFFSET] = (byte) (sendData[m_RA_BYTE_OFFSET] | (byte) 0x80);
+        DatagramPacket queryPacket = new DatagramPacket(sendData, sendData.length, address, portNum);
+
+        try {
+            serverSocket.send(queryPacket);
+        }catch (Exception e){
+            System.err.println(" Un able to send exception to client \n " + e.getMessage());
         }
     }
 
 
     /**
-     * this mthods gets 2 bytes and get the short num they represent
+     * This methods gets 2 bytes and get the short num they represent
      *
      * @param firstByte   - first byte
      * @param secondByte- second byte
@@ -330,5 +450,48 @@ public class SinkholeServer {
         return ans;
     }
 
+    /**
+     * NEW METHOD ADDED
+     * This method reads the blocklist file and adds all the sites into this list
+     *
+     * @param fileName - the file of the blocklist
+     *                 SIDE EFFECT     - This method changes the values of the Set
+     */
+    private static void blockListSet(String fileName) throws IOException {
+        int c;
+        StringBuilder sb = new StringBuilder();
+        FileInputStream fis = null;
+        try {
+            fis = new FileInputStream(fileName);
+            c = fis.read();
+            while (c != -1) {
+                while (c != '\n') {
+                    sb.append((char) c);
+                    c = fis.read();
+                }
+                m_BLOCKLIST.add(sb.toString());
+                sb = new StringBuilder();
+                c = fis.read();
+            }
+        } catch (FileNotFoundException fnfe) {
+            System.out.println("No such file");
+        } catch (IOException ioe) {
+            System.out.println("IO Exception");
+        } finally {
+            if (fis != null) {
+                fis.close();
+            }
+        }
+    }
 
+    /**
+     * NEW METHOD
+     * This method checks whether a certain question is in the block list
+     *
+     * @param question - the question received from DNS query
+     * @return if the question is in the set
+     */
+    private static boolean isInBlockList(String question) {
+        return m_BLOCKLIST.contains(question);
+    }
 }
