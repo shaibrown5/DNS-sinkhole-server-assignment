@@ -28,8 +28,14 @@ public class SinkholeServer {
     private static final HashSet<String> m_BLOCKLIST = new HashSet<>();
 
     public static void main(String[] args) throws Exception {
+        // if there is a blocklist try reading it
         if (args.length > 0) {
-            blockListSet(args[0]);
+            try {
+                blockListSet(args[0]);
+            }catch (IOException io){
+                System.err.println("Error reading blocklist file \n" + io.getMessage());
+                return;
+            }
         }
         //Buffers to hold the incoming datagram and the outgoing datagram
         byte[] receivedData = new byte[1024];
@@ -103,6 +109,7 @@ public class SinkholeServer {
                 // Handling, reading and saving all the headers total of 12 bytes or 6 shorts
                 int numAnswers = shortToInt(receivedData[m_NUM_ANSWERS_BYTE_OFFSET], receivedData[m_NUM_ANSWERS_BYTE_OFFSET + 1]);
                 int numAuth = shortToInt(receivedData[m_NUM_AUTHORITY_BYTE_OFFSET], receivedData[m_NUM_AUTHORITY_BYTE_OFFSET + 1]);
+                // checks if the error byte represents an error z
                 boolean haveNoErr = hasNoError(String.format("%x", receivedData[m_ERROR_BYTE_OFFSET]));
                 System.out.println("number of answers: " + numAnswers);
                 System.out.println("number of authority: " + numAuth);
@@ -483,6 +490,27 @@ public class SinkholeServer {
             }
         }
     }
+
+
+    /*
+    public static void blockListSet(String fileName) throws IOException
+  {
+  // We need to provide file path as the parameter:
+  // double backquote is to avoid compiler interpret words
+  // like \test as \t (ie. as a escape sequence)
+
+  File file = new File("C:\\Users\\pankaj\\Desktop\\test.txt");
+
+  BufferedReader br = new BufferedReader(new FileReader(file));
+
+  String st;
+  while ((st = br.readLine()) != null)
+    System.out.println(st);
+  }
+     */
+
+
+
 
     /**
      * NEW METHOD
