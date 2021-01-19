@@ -36,28 +36,27 @@ public class SinkholeServer {
         if (args.length > 0) {
             try {
                 blockListSet(args[0]);
-            }catch (IOException io){
+            } catch (IOException io) {
                 System.err.println("Error reading blocklist file \n" + io.getMessage());
                 return;
             }
         }
         //Buffers to hold the incoming datagram and the outgoing datagram
         byte[] receivedData = new byte[1024];
-
         // Binds port 5300 to socket on local host
         DatagramSocket serverSocket = new DatagramSocket(5300);
 
         while (true) {
             // Get random root server and get its IP
             String rootServer = getRandomRootServer();
+            // reset the pointer for the data array
             m_BYTE_POINTER = 0;
 
             // Set the IP address to the root server
             InetAddress ipAddress;
-            try{
+            try {
                 ipAddress = InetAddress.getByName(rootServer);
-            }
-            catch(UnknownHostException ue){
+            } catch (UnknownHostException ue) {
                 System.err.println(ue.getMessage());
                 continue;
             }
@@ -66,9 +65,9 @@ public class SinkholeServer {
             DatagramPacket receiveFromClientPacket = new DatagramPacket(receivedData, receivedData.length);
 
             // attempt to recieve the incoming datapacket
-            try{
+            try {
                 serverSocket.receive(receiveFromClientPacket);
-            }catch(IOException io){
+            } catch (IOException io) {
                 System.err.println(io.getMessage());
                 continue;
             }
@@ -81,22 +80,23 @@ public class SinkholeServer {
             InetAddress clientIpAddress = receiveFromClientPacket.getAddress();
             int clientPort = receiveFromClientPacket.getPort();
 
-            // resize the data array to the proper size
+            // resize the data array to the proper size of the data given by the packet
             byte[] sendOriginalData = Arrays.copyOfRange(receivedData, 0, receiveFromClientPacket.getLength());
 
             // check if the name is in the block list before sending to the root server
             // check if original has error
             boolean haveNoErr = hasNoError(String.format("%x", sendOriginalData[m_ERROR_BYTE_OFFSET]));
-            //skip the flags
+            //skip the flags in order to read the name.
             m_BYTE_POINTER += 12;
-            // if you have an error send the packet with the original error
-            if(!haveNoErr){
+            // if it has an error send the packet with the original error to the client
+            if (!haveNoErr) {
                 sendPacketToClient(sendOriginalData, clientIpAddress, clientPort, serverSocket, m_ZER_ERROR_NUM);
+                System.err.println("the packet arrived with an error");
                 continue;
             }
 
-            if(args.length > 0){
-                //get question name
+            if (args.length > 0) {
+                //get question name in order to check with the blocklist
                 String questionName = labelHandler(sendOriginalData, m_BYTE_POINTER, false);
                 // if the question name is in the blocklist send name error and continue
                 if (isInBlockList(questionName.substring(0, questionName.length() - 1))) {
@@ -110,40 +110,42 @@ public class SinkholeServer {
             DatagramPacket sendToRootServerPacket = new DatagramPacket(sendOriginalData, sendOriginalData.length, ipAddress, m_UDP_PORT);
 
             // Sent the data to the root server
-            try{
+            try {
                 serverSocket.send(sendToRootServerPacket);
-            }catch (IllegalArgumentException | IOException e){
-                System.err.println(e.getMessage());
+            } catch (IllegalArgumentException | IOException e) {
+                System.err.println("Unable to send packet\n" + e.getMessage());
                 sendPacketToClient(sendOriginalData, clientIpAddress, clientPort, serverSocket, m_SERVER_ERROR_NUM);
                 continue;
             }
 
             for (int i = 0; i < 16; i++) {
                 m_GOT_ANSWER = false;
+                // create another buffer for the packets data
                 receivedData = new byte[1024];
 
-                // Gets the next response
+                // packet to recieve the next response
                 DatagramPacket responsePacket = new DatagramPacket(receivedData, receivedData.length);
 
                 // Halts until the query has been received from authority
-                try{
+                try {
                     serverSocket.receive(responsePacket);
-                }catch(IOException io){
-                    System.err.println(io.getMessage());
+                } catch (IOException io) {
+                    System.err.println("unable to recieve packet\n" + io.getMessage());
+                    //send to client with server error
                     sendPacketToClient(sendOriginalData, clientIpAddress, clientPort, serverSocket, m_SERVER_ERROR_NUM);
                     break;
                 }
 
-                // Resize the data received accordingly to its size
+                // Resize the data received accordingly to its size form the packet
                 receivedData = Arrays.copyOfRange(receivedData, 0, responsePacket.getLength());
 
-                // Readjust the pointer to the beginning
+                // Readjust the pointer to the beginning for reading
                 m_BYTE_POINTER = 0;
 
-                // Handling, reading and saving all the headers total of 12 bytes or 6 shorts
+                // read the flags and save the number of auth and the number of answers
                 int numAnswers = shortToInt(receivedData[m_NUM_ANSWERS_BYTE_OFFSET], receivedData[m_NUM_ANSWERS_BYTE_OFFSET + 1]);
                 int numAuth = shortToInt(receivedData[m_NUM_AUTHORITY_BYTE_OFFSET], receivedData[m_NUM_AUTHORITY_BYTE_OFFSET + 1]);
-                // checks if the error byte represents an error z
+                // checks if the error byte represents an error
                 haveNoErr = hasNoError(String.format("%x", receivedData[m_ERROR_BYTE_OFFSET]));
 
                 // Advances the pointer in order to skip the flags
@@ -176,10 +178,11 @@ public class SinkholeServer {
                         } else {
                             // Go to previous byte
                             m_BYTE_POINTER--;
+                            // read the name
                             labelHandler(receivedData, m_BYTE_POINTER, false);
                         }
 
-                        // Reading and Skipping over, type (2 bytes), class(2 bytes), ttl(4 bytes), rdlenth(2 bytes) total of 10 bytes
+                        //Skipping over, type (2 bytes), class(2 bytes), ttl(4 bytes), rdlenth(2 bytes) total of 10 bytes
                         m_BYTE_POINTER += 10;
 
                         // Getting the first name server from authority
@@ -189,9 +192,9 @@ public class SinkholeServer {
                         InetAddress nameServerAddress;
                         try {
                             nameServerAddress = InetAddress.getByName(respectMyAuthorityah);
-                        }
-                        catch (UnknownHostException ue){
-                            m_GOT_ANSWER = true;
+                        } catch (UnknownHostException ue) {
+                            System.err.println("Unknown host\n" + ue.getMessage());
+                            // send server error packet back to user.
                             sendPacketToClient(sendOriginalData, clientIpAddress, clientPort, serverSocket, m_SERVER_ERROR_NUM);
                             break;
                         }
@@ -199,26 +202,23 @@ public class SinkholeServer {
                         // create the next queryPacket
                         DatagramPacket queryPacket = new DatagramPacket(sendOriginalData, sendOriginalData.length, nameServerAddress, m_UDP_PORT);
 
-                        try{
+                        try {
                             serverSocket.send(queryPacket);
-                        }catch (IllegalArgumentException | IOException e){
-                            m_GOT_ANSWER = true;
-                            System.err.println(e.getMessage());
+                        } catch (IllegalArgumentException | IOException e) {
+                            System.err.println("Unable to send packet\n" + e.getMessage());
                             sendPacketToClient(sendOriginalData, clientIpAddress, clientPort, serverSocket, m_SERVER_ERROR_NUM);
                             break;
                         }
-
-
                     }
                     // enter here when auth =0 and or ans > 0
                     else {
-                        m_GOT_ANSWER = true;
                         // initiate with no error
                         byte errorNum = m_ZER_ERROR_NUM;
 
-                        // if it no auth and no ans then return upate the nxdomain flag for sending
-                        if (numAuth == 0 && numAnswers == 0){
+                        // if it no auth and no ans then return update the nxdomain flag for sending
+                        if (numAuth == 0 && numAnswers == 0) {
                             errorNum = m_NAME_ERROR_NUM;
+                            System.err.println("Auth = 0 and ans = 0");
                         }
 
                         // send the answer
@@ -228,18 +228,18 @@ public class SinkholeServer {
                 }
                 // enters the else if the packet has an error:
                 else {
-                    m_GOT_ANSWER = true;
                     // in the event of an error , update all the flags and keep the original error flag , and return to client.
                     // send with error num 0 --> this will keep original error when sending
                     sendPacketToClient(sendOriginalData, clientIpAddress, clientPort, serverSocket, m_NAME_ERROR_NUM);
+                    System.err.println("The had an eror");
                     break;
                 }
             }
 
             // if 16 iterations passed then send a serverfailure error
-            if(!m_GOT_ANSWER){
+            if (!m_GOT_ANSWER) {
                 sendPacketToClient(sendOriginalData, clientIpAddress, clientPort, serverSocket, m_SERVER_ERROR_NUM);
-                System.err.println("Didnt not get answer in 16 iterations");
+                System.err.println("Didn't get answer in 16 iterations");
             }
         }
     }
@@ -247,24 +247,27 @@ public class SinkholeServer {
 
     /**
      * This method updates the data flags and sends it to client with the wanted changes
-     * @param sendData - byte aarray representing the data to send
-     * @param address - the ip adress of the client
-     * @param portNum - the clients port num
+     * the error byte is changes accordingly --> if errorNum is 0 and there is no error, then the packet is sent with no error
+     * if error num 0 and there is an error, then the packet is sent with the original error
+     *
+     * @param sendData     - byte aarray representing the data to send
+     * @param address      - the ip adress of the client
+     * @param portNum      - the clients port num
      * @param serverSocket - the server socket that will send the data
-     * @param errorNum - the error num to update in the error flags
+     * @param errorNum     - the error num to update in the error flags
      */
-    private static void sendPacketToClient(byte[] sendData, InetAddress address, int portNum, DatagramSocket serverSocket, byte errorNum){
+    private static void sendPacketToClient(byte[] sendData, InetAddress address, int portNum, DatagramSocket serverSocket, byte errorNum) {
         // update the flags for sending
-        byte[] updatedData = sendData;
+        m_GOT_ANSWER = true;
 
         // unset up flag AA
-        updatedData[m_AA_BYTE_OFFSET] = (byte) (updatedData[m_AA_BYTE_OFFSET] & (byte) 0xFB);
+        sendData[m_AA_BYTE_OFFSET] = (byte) (sendData[m_AA_BYTE_OFFSET] & (byte) 0xFB);
         // light up RD
-        updatedData[m_RD_BYTE_OFFSET] = (byte) (updatedData[m_RD_BYTE_OFFSET] | (byte) 0x1);
+        sendData[m_RD_BYTE_OFFSET] = (byte) (sendData[m_RD_BYTE_OFFSET] | (byte) 0x1);
         // light up flag QR
-        updatedData[m_QR_BYTE_OFFSET] = (byte) (updatedData[m_QR_BYTE_OFFSET] | (byte) 0x80);
+        sendData[m_QR_BYTE_OFFSET] = (byte) (sendData[m_QR_BYTE_OFFSET] | (byte) 0x80);
         // light up flag RA
-        updatedData[m_RA_BYTE_OFFSET] = (byte) (updatedData[m_RA_BYTE_OFFSET] | (byte) 0x80);
+        sendData[m_RA_BYTE_OFFSET] = (byte) (sendData[m_RA_BYTE_OFFSET] | (byte) 0x80);
         // light data error according to errroNum
         sendData[m_ERROR_BYTE_OFFSET] = (byte) (sendData[m_ERROR_BYTE_OFFSET] | errorNum);
         //create new packet for sending
@@ -272,7 +275,7 @@ public class SinkholeServer {
 
         try {
             serverSocket.send(queryPacket);
-        }catch (Exception e){
+        } catch (Exception e) {
             System.err.println(" Unable to send exception to client \n " + e.getMessage());
         }
     }
@@ -324,7 +327,7 @@ public class SinkholeServer {
      * <p>
      * the global data pointer is updated accordingly
      * <p>
-     * IMPORTANT: THE RETURNED STRING HAS A . IN THE END - TO BE REMOVED BY USER
+     * IMPORTANT: THE RETURNED STRING HAS A . IN THE END
      *
      * @param i_recievedData    - a byte array containing all the data
      * @param i_arrPointer      - a number acting as a pointer for the {@param recivedData} array
@@ -334,14 +337,17 @@ public class SinkholeServer {
     private static String labelHandler(byte[] i_recievedData, int i_arrPointer, boolean i_callFromPointer) {
         StringBuilder addressBuilder = new StringBuilder();
         byte b;
+        // number of bytes to read
         byte numToRead;
+        // did we reach a pointer?
         boolean isPointer = false;
+        // chooses the pointer according to who called the function, a pointer or not
         int pointer = (i_callFromPointer) ? i_arrPointer : m_BYTE_POINTER;
 
         try {
             // gets the amount of letters to read
             numToRead = i_recievedData[pointer++];
-
+            //reads the ammount of letters and appends them
             while (numToRead != 0 && !isPointer) {
                 for (int j = 0; j < numToRead; j++) {
                     b = i_recievedData[pointer++];
@@ -356,13 +362,13 @@ public class SinkholeServer {
             }
 
             if (isPointer) {
+                //calc the offset
                 int offset = calcOffset(Byte.toUnsignedInt(numToRead), Byte.toUnsignedInt(i_recievedData[pointer++]));
-
                 String suffixLabel = pointerHandler(offset, i_recievedData);
                 addressBuilder.append(suffixLabel);
             }
 
-            // update the global pointer
+            // update the global pointer if it was not called form pointer
             if (!i_callFromPointer) {
                 m_BYTE_POINTER = pointer;
             }
@@ -427,7 +433,6 @@ public class SinkholeServer {
     }
 
     /**
-     * NEW METHOD ADDED
      * This method reads the blocklist file and adds all the sites into this list
      *
      * @param fileName - the file of the blocklist
@@ -450,7 +455,7 @@ public class SinkholeServer {
                 c = fis.read();
             }
         } catch (FileNotFoundException fnfe) {
-            System.err.println("No such file");
+            System.err.println("No such file found");
         } catch (IOException ioe) {
             System.err.println("IO Exception");
         } finally {
@@ -459,7 +464,6 @@ public class SinkholeServer {
             }
         }
     }
-
 
     /**
      * NEW METHOD
